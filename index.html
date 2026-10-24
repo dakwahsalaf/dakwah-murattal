@@ -5,13 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Feed Video</title>
 <style>
-  :root {
-    --bg: #000;
-    --fg: #f2f2f2;
-    --muted: #8d8d8d;
-    --safe-top: env(safe-area-inset-top, 0px);
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
-  }
+  :root { --bg: #000; --fg: #f2f2f2; --muted: #8d8d8d; --safe-bottom: env(safe-area-inset-bottom, 0px); }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -19,16 +13,17 @@
     overscroll-behavior-y: contain; scrollbar-width: none; }
   #feed::-webkit-scrollbar { display: none; }
   .slide { position: relative; height: 100vh; height: 100dvh; scroll-snap-align: start;
-    scroll-snap-stop: always; overflow: hidden; background: var(--bg); }
-  .slide iframe { position: absolute; border: 0; transform-origin: 0 0; background: #000; }
+    scroll-snap-stop: always; overflow: hidden; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; }
+  .box { overflow: hidden; transform-origin: center center; flex: none; background: #000; }
+  .box iframe { display: block; width: 100%; border: 0; background: #fff; }
   .hint { position: fixed; left: 0; right: 0; bottom: calc(18px + var(--safe-bottom));
-    text-align: center; font-size: 14px; color: var(--fg); z-index: 5; pointer-events: none;
-    transition: opacity .6s; }
+    text-align: center; font-size: 14px; z-index: 5; pointer-events: none; transition: opacity .6s; }
   .hint span { background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 20px; }
   .hint.hide { opacity: 0; }
   .msg { height: 100%; display: grid; place-items: center; padding: 24px; text-align: center;
     color: var(--muted); line-height: 1.5; max-width: 34ch; margin: 0 auto; }
-  @media (prefers-reduced-motion: reduce) { .hint { transition: none; } #feed { scroll-behavior: auto; } }
+  @media (prefers-reduced-motion: reduce) { .hint { transition: none; } }
 </style>
 </head>
 <body>
@@ -36,12 +31,14 @@
 <div class="hint" id="hint"><span>Geser untuk ganti video, ketuk untuk memutar</span></div>
 
 <script>
-// Ganti dengan link raw GitHub, misalnya:
-// https://raw.githubusercontent.com/USERNAME/REPO/main/videos.json
+// Ganti dengan link raw GitHub bila videos.json ada di tempat lain.
 const VIDEOS_URL = "videos.json";
 
-// Ukuran area video dari embed Instagram (rasio 9:16) dan tinggi header yang dipotong.
-const EMBED_W = 540, EMBED_H = 960, HEADER_H = 56;
+// Tinggi bar "Lihat lainnya di Instagram" yang dipotong dari bawah embed (px).
+// Kalau masih kelihatan, naikkan angkanya. Kalau video ikut terpotong, turunkan.
+const BAR_H = 64;
+const MAX_W = 540;       // lebar maksimum embed Instagram
+const START_H = 700;     // tinggi sementara sebelum Instagram mengirim ukuran asli
 
 const feed = document.getElementById("feed");
 const hint = document.getElementById("hint");
@@ -58,14 +55,19 @@ function toEmbedUrl(link) {
   } catch (e) { return null; }
 }
 
-function layout(iframe) {
-  const w = feed.clientWidth, h = feed.clientHeight;
-  const s = Math.max(w / EMBED_W, h / EMBED_H);
-  iframe.style.width = EMBED_W + "px";
-  iframe.style.height = (EMBED_H + HEADER_H) + "px";
-  iframe.style.transform = "scale(" + s + ")";
-  iframe.style.left = (w - EMBED_W * s) / 2 + "px";
-  iframe.style.top = (h - EMBED_H * s) / 2 - HEADER_H * s + "px";
+// Atur ukuran kotak: lebar mengikuti layar, tinggi mengikuti isi embed tanpa bar bawah,
+// lalu diperkecil seperlunya agar muat di layar.
+function fit(slide) {
+  const box = slide.querySelector(".box");
+  const f = box.querySelector("iframe");
+  const w = Math.min(MAX_W, feed.clientWidth);
+  const h = parseFloat(slide.dataset.h) || START_H;
+  const visibleH = Math.max(h - BAR_H, 100);
+  box.style.width = w + "px";
+  box.style.height = visibleH + "px";
+  f.style.height = h + "px";
+  const s = Math.min(1, feed.clientHeight / visibleH);
+  box.style.transform = "scale(" + s + ")";
 }
 
 function setLoaded(i, on) {
@@ -77,60 +79,91 @@ function setLoaded(i, on) {
     f.src = el.dataset.embed;
     f.allow = "autoplay; encrypted-media; fullscreen";
     f.title = "Video Instagram " + (i + 1);
-    f.loading = "lazy";
-    layout(f);
-    el.appendChild(f);
+    el.querySelector(".box").appendChild(f);
+    fit(el);
   } else if (!on && f) {
-    f.remove(); // menghentikan pemutaran video yang sudah digeser
+    f.remove(); // menghentikan video yang sudah digeser
   }
 }
 
-function update() {
-  slides.forEach((_, i) => setLoaded(i, i === active || i === active + 1));
-}
+function update() { slides.forEach((_, i) => setLoaded(i, i === active || i === active + 1)); }
 
 function show(msg) {
   feed.innerHTML = '<div class="msg">' + msg + "</div>";
   hint.classList.add("hide");
 }
 
+let pool = [], io, lastUrl = null;
+
+// Satu putaran: semua video diacak. Putaran baru ditambahkan terus tanpa henti,
+// dan video yang sama tidak muncul dua kali berturut-turut.
+function addBatch() {
+  const order = pool.slice();
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  if (order.length > 1 && order[0] === lastUrl) {
+    const k = 1 + Math.floor(Math.random() * (order.length - 1));
+    [order[0], order[k]] = [order[k], order[0]];
+  }
+  order.forEach(url => {
+    const d = document.createElement("section");
+    d.className = "slide";
+    d.dataset.embed = url;
+    d.innerHTML = '<div class="box"></div>';
+    feed.appendChild(d);
+    slides.push(d);
+    io.observe(d);
+  });
+  lastUrl = order[order.length - 1];
+}
+
 function build(list) {
   const items = list.map(v => typeof v === "string" ? v : v && v.url).filter(Boolean);
-  const valid = items.map(toEmbedUrl).filter(Boolean);
-  if (!valid.length) {
+  pool = items.map(toEmbedUrl).filter(Boolean);
+  if (!pool.length) {
     show("Belum ada link yang valid. Isi videos.json dengan link postingan atau reel Instagram yang publik.");
     return;
   }
   feed.innerHTML = "";
-  valid.forEach(url => {
-    const d = document.createElement("section");
-    d.className = "slide";
-    d.dataset.embed = url;
-    feed.appendChild(d);
-    slides.push(d);
-  });
-  const io = new IntersectionObserver(entries => {
+  io = new IntersectionObserver(entries => {
     entries.forEach(e => {
-      if (e.isIntersecting) { active = slides.indexOf(e.target); update(); }
+      if (e.isIntersecting) {
+        active = slides.indexOf(e.target);
+        if (active >= slides.length - 2) addBatch(); // hampir habis: tambah putaran acak baru
+        update();
+      }
     });
   }, { root: feed, threshold: 0.6 });
-  slides.forEach(s => io.observe(s));
+  addBatch();
   update();
   setTimeout(() => hint.classList.add("hide"), 5000);
 }
 
-function go(delta) {
-  const i = Math.min(Math.max(active + delta, 0), slides.length - 1);
-  if (slides[i]) slides[i].scrollIntoView({ behavior: "smooth", block: "start" });
-}
+// Instagram mengirim tinggi isi embed lewat postMessage.
+window.addEventListener("message", e => {
+  if (!/(^|\.)instagram\.com$/.test(new URL(e.origin).hostname)) return;
+  let d = e.data;
+  if (typeof d === "string") { try { d = JSON.parse(d); } catch (err) { return; } }
+  const h = d && d.type === "MEASURE" && d.details && d.details.height;
+  if (!h) return;
+  const slide = slides.find(s => {
+    const f = s.querySelector("iframe");
+    return f && f.contentWindow === e.source;
+  });
+  if (slide) { slide.dataset.h = h; fit(slide); }
+});
 
 document.addEventListener("keydown", e => {
+  const go = d => {
+    const i = Math.min(Math.max(active + d, 0), slides.length - 1);
+    if (slides[i]) slides[i].scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   if (e.key === "ArrowDown" || e.key === "PageDown") { e.preventDefault(); go(1); }
   if (e.key === "ArrowUp" || e.key === "PageUp") { e.preventDefault(); go(-1); }
 });
-window.addEventListener("resize", () => {
-  slides.forEach(s => { const f = s.querySelector("iframe"); if (f) layout(f); });
-});
+window.addEventListener("resize", () => slides.forEach(fit));
 
 fetch(VIDEOS_URL, { cache: "no-cache" })
   .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
