@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Feed Video</title>
+<style>
+  :root {
+    --bg: #000;
+    --fg: #f2f2f2;
+    --muted: #8d8d8d;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #feed { height: 100%; overflow-y: scroll; scroll-snap-type: y mandatory;
+    overscroll-behavior-y: contain; scrollbar-width: none; }
+  #feed::-webkit-scrollbar { display: none; }
+  .slide { position: relative; height: 100vh; height: 100dvh; scroll-snap-align: start;
+    scroll-snap-stop: always; overflow: hidden; background: var(--bg); }
+  .slide iframe { position: absolute; border: 0; transform-origin: 0 0; background: #000; }
+  .hint { position: fixed; left: 0; right: 0; bottom: calc(18px + var(--safe-bottom));
+    text-align: center; font-size: 14px; color: var(--fg); z-index: 5; pointer-events: none;
+    transition: opacity .6s; }
+  .hint span { background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 20px; }
+  .hint.hide { opacity: 0; }
+  .msg { height: 100%; display: grid; place-items: center; padding: 24px; text-align: center;
+    color: var(--muted); line-height: 1.5; max-width: 34ch; margin: 0 auto; }
+  @media (prefers-reduced-motion: reduce) { .hint { transition: none; } #feed { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<div id="feed" tabindex="0" aria-label="Daftar video"></div>
+<div class="hint" id="hint"><span>Geser untuk ganti video, ketuk untuk memutar</span></div>
+
+<script>
+// Ganti dengan link raw GitHub, misalnya:
+// https://raw.githubusercontent.com/USERNAME/REPO/main/videos.json
+const VIDEOS_URL = "videos.json";
+
+// Ukuran area video dari embed Instagram (rasio 9:16) dan tinggi header yang dipotong.
+const EMBED_W = 540, EMBED_H = 960, HEADER_H = 56;
+
+const feed = document.getElementById("feed");
+const hint = document.getElementById("hint");
+let slides = [], active = 0;
+
+function toEmbedUrl(link) {
+  try {
+    const u = new URL(link.trim());
+    if (!/(^|\.)instagram\.com$/.test(u.hostname)) return null;
+    const m = u.pathname.match(/\/(reel|reels|p|tv)\/([\w-]+)/);
+    if (!m) return null;
+    const type = m[1] === "reels" ? "reel" : m[1];
+    return "https://www.instagram.com/" + type + "/" + m[2] + "/embed/";
+  } catch (e) { return null; }
+}
+
+function layout(iframe) {
+  const w = feed.clientWidth, h = feed.clientHeight;
+  const s = Math.max(w / EMBED_W, h / EMBED_H);
+  iframe.style.width = EMBED_W + "px";
+  iframe.style.height = (EMBED_H + HEADER_H) + "px";
+  iframe.style.transform = "scale(" + s + ")";
+  iframe.style.left = (w - EMBED_W * s) / 2 + "px";
+  iframe.style.top = (h - EMBED_H * s) / 2 - HEADER_H * s + "px";
+}
+
+function setLoaded(i, on) {
+  const el = slides[i];
+  if (!el) return;
+  let f = el.querySelector("iframe");
+  if (on && !f) {
+    f = document.createElement("iframe");
+    f.src = el.dataset.embed;
+    f.allow = "autoplay; encrypted-media; fullscreen";
+    f.title = "Video Instagram " + (i + 1);
+    f.loading = "lazy";
+    layout(f);
+    el.appendChild(f);
+  } else if (!on && f) {
+    f.remove(); // menghentikan pemutaran video yang sudah digeser
+  }
+}
+
+function update() {
+  slides.forEach((_, i) => setLoaded(i, i === active || i === active + 1));
+}
+
+function show(msg) {
+  feed.innerHTML = '<div class="msg">' + msg + "</div>";
+  hint.classList.add("hide");
+}
+
+function build(list) {
+  const items = list.map(v => typeof v === "string" ? v : v && v.url).filter(Boolean);
+  const valid = items.map(toEmbedUrl).filter(Boolean);
+  if (!valid.length) {
+    show("Belum ada link yang valid. Isi videos.json dengan link postingan atau reel Instagram yang publik.");
+    return;
+  }
+  feed.innerHTML = "";
+  valid.forEach(url => {
+    const d = document.createElement("section");
+    d.className = "slide";
+    d.dataset.embed = url;
+    feed.appendChild(d);
+    slides.push(d);
+  });
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) { active = slides.indexOf(e.target); update(); }
+    });
+  }, { root: feed, threshold: 0.6 });
+  slides.forEach(s => io.observe(s));
+  update();
+  setTimeout(() => hint.classList.add("hide"), 5000);
+}
+
+function go(delta) {
+  const i = Math.min(Math.max(active + delta, 0), slides.length - 1);
+  if (slides[i]) slides[i].scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown" || e.key === "PageDown") { e.preventDefault(); go(1); }
+  if (e.key === "ArrowUp" || e.key === "PageUp") { e.preventDefault(); go(-1); }
+});
+window.addEventListener("resize", () => {
+  slides.forEach(s => { const f = s.querySelector("iframe"); if (f) layout(f); });
+});
+
+fetch(VIDEOS_URL, { cache: "no-cache" })
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(data => build(Array.isArray(data) ? data : data.videos || []))
+  .catch(() => show("Daftar video tidak bisa dimuat. Periksa alamat VIDEOS_URL dan pastikan videos.json ada."));
+</script>
+</body>
+</html>
